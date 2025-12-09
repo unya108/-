@@ -1,0 +1,378 @@
+# const COLS = 10;
+const ROWS = 20;
+const CELL_SIZE = 25; // CSS와 동일하게 설정
+const BOARD_SIZE = COLS * ROWS;
+
+const boardElement = document.getElementById('game-board');
+const scoreElement = document.getElementById('score');
+const controlsElement = document.getElementById('controls');
+const messageElement = document.getElementById('game-message');
+
+let board = []; // 게임 보드 상태 (0: 비어있음, 문자열: 블록 종류)
+let currentPiece; // 현재 움직이는 블록 객체
+let currentRotation = 0; // 현재 블록의 회전 상태 인덱스
+let currentX = 3; // 현재 블록의 X 좌표 (좌상단 기준)
+let currentY = 0; // 현재 블록의 Y 좌표 (좌상단 기준)
+let score = 0;
+let gameLoopInterval; // 게임 루프 setInterval ID
+let dropSpeed = 1000; // 블록이 자동으로 떨어지는 시간 (ms)
+let isGameOver = true; // 게임 오버 상태
+
+// 테트로미노 정의 (모양 배열, 색상 클래스)
+const PIECES = [
+    // T-Shape (Purple)
+    { shape: [[[0,1,0], [1,1,1], [0,0,0]]], color: 'T' },
+    // O-Shape (Yellow) - 4번 돌려도 같지만 배열 형식 유지
+    { shape: [[[1,1], [1,1]]], color: 'O' },
+    // J-Shape (Blue)
+    { shape: [[[1,0,0], [1,1,1], [0,0,0]]], color: 'J' },
+    // L-Shape (Orange)
+    { shape: [[[0,0,1], [1,1,1], [0,0,0]]], color: 'L' },
+    // I-Shape (Cyan)
+    { shape: [[[0,0,0,0], [1,1,1,1], [0,0,0,0], [0,0,0,0]]], color: 'I' },
+    // S-Shape (Green)
+    { shape: [[[0,1,1], [1,1,0], [0,0,0]]], color: 'S' },
+    // Z-Shape (Red)
+    { shape: [[[1,1,0], [0,1,1], [0,0,0]]], color: 'Z' }
+];
+
+// 각 테트로미노에 회전된 모양들을 미리 생성 (pre-calculate rotations)
+// J, L, S, Z, T 모양은 4가지 회전, I는 2가지, O는 1가지
+PIECES.forEach(piece => {
+    // 이미 1개 모양이 있으므로 3번 더 회전하여 총 4개 모양 생성
+    let currentShape = piece.shape[0];
+    for (let i = 0; i < 3; i++) {
+        currentShape = rotateMatrix(currentShape);
+        piece.shape.push(currentShape);
+    }
+    // I, O 블록은 회전 수가 적으므로 중복 제거 또는 필요한 만큼만 유지 가능
+    // 여기서는 단순화를 위해 모든 블록 4회전으로 처리 (실제 테트리스와 다를 수 있음)
+});
+
+
+// 1. 보드 초기화 및 HTML 렌더링
+function createBoard() {
+    boardElement.style.width = `${COLS * CELL_SIZE}px`;
+    boardElement.style.height = `${ROWS * CELL_SIZE}px`;
+
+    // 기존 셀 삭제
+    boardElement.innerHTML = '';
+    
+    for (let i = 0; i < BOARD_SIZE; i++) {
+        const cell = document.createElement('div');
+        cell.classList.add('grid-cell');
+        boardElement.appendChild(cell);
+    }
+    // 2차원 배열 초기화
+    board = Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+}
+
+// 2. 새로운 블록 생성
+function newPiece() {
+    // 모든 블록 4가지 회전 모양을 가지고 있도록 PIECES 배열 수정함
+    currentPiece = {
+        ...PIECES[Math.floor(Math.random() * PIECES.length)],
+        rotationIndex: 0 // 항상 첫 번째 회전 상태로 시작
+    };
+    currentX = 3;
+    currentY = 0;
+
+    // 게임 오버 조건: 새로운 블록이 시작부터 충돌하는 경우
+    if (!isValidMove(currentX, currentY, currentPiece.shape[currentPiece.rotationIndex])) {
+        gameOver();
+        return false;
+    }
+    return true;
+}
+
+// 3. 행렬 회전 함수 (단일 회전 수행)
+function rotateMatrix(matrix) {
+    const N = matrix.length;
+    let newMatrix = Array.from({ length: N }, () => Array(N).fill(0));
+
+    for (let y = 0; y < N; ++y) {
+        for (let x = 0; x < N; ++x) {
+            newMatrix[x][N - 1 - y] = matrix[y][x];
+        }
+    }
+    return newMatrix;
+}
+
+// 4. 충돌 및 경계 검사 (핵심 로직)
+function isValidMove(newX, newY, shape) {
+    for (let y = 0; y < shape.length; y++) {
+        for (let x = 0; x < shape[y].length; x++) {
+            if (shape[y][x]) { // 블록의 일부인 경우
+                const boardX = newX + x;
+                const boardY = newY + y;
+
+                // 1. 보드 경계 체크
+                if (boardX < 0 || boardX >= COLS || boardY >= ROWS) {
+                    return false;
+                }
+                // 2. 이미 고정된 블록과의 충돌 체크 (보드 밖(-1)인 경우는 체크하지 않음)
+                if (boardY >= 0 && board[boardY] && board[boardY][boardX] !== 0) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+// 5. 현재 블록을 보드에 그리기/지우기
+function drawPiece(clear = false) {
+    if (!currentPiece) return;
+
+    const shape = currentPiece.shape[currentPiece.rotationIndex];
+    const color = clear ? 0 : currentPiece.color;
+
+    for (let y = 0; y < shape.length; y++) {
+        for (let x = 0; x < shape[y].length; x++) {
+            if (shape[y][x]) {
+                const boardY = currentY + y;
+                const boardX = currentX + x;
+
+                if (boardY >= 0 && boardY < ROWS && boardX >= 0 && boardX < COLS) {
+                    const index = boardY * COLS + boardX;
+                    const cell = boardElement.children[index];
+                    
+                    cell.className = 'grid-cell'; // 기본 클래스 유지
+                    if (color !== 0) {
+                        cell.classList.add(color);
+                        cell.classList.add('filled'); // 움직이는 블록도 filled로 표시
+                    } else if (board[boardY][boardX] !== 0) {
+                        // 고정된 블록은 지우지 않고 원래 색 유지
+                        cell.classList.add(board[boardY][boardX]);
+                        cell.classList.add('filled');
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+// 6. 보드 상태 기반으로 전체 렌더링 (고정된 블록 + 현재 움직이는 블록)
+function renderBoard() {
+    for (let y = 0; y < ROWS; y++) {
+        for (let x = 0; x < COLS; x++) {
+            const index = y * COLS + x;
+            const cell = boardElement.children[index];
+            cell.className = 'grid-cell'; // 모든 클래스 초기화
+            if (board[y][x] !== 0) {
+                cell.classList.add(board[y][x]);
+                cell.classList.add('filled');
+            }
+        }
+    }
+    // 현재 움직이는 블록 다시 그리기 (고정된 블록 위에 덮어 그림)
+    if (currentPiece) {
+        drawPiece();
+    }
+    scoreElement.textContent = score;
+}
+
+// 7. 블록을 보드에 고정
+function lockPiece() {
+    const shape = currentPiece.shape[currentPiece.rotationIndex];
+    const color = currentPiece.color;
+
+    for (let y = 0; y < shape.length; y++) {
+        for (let x = 0; x < shape[y].length; x++) {
+            if (shape[y][x]) {
+                const boardY = currentY + y;
+                const boardX = currentX + x;
+                // 보드 경계 체크 (가끔 블록이 Y=0에서 멈출 때 -1인 경우가 있어서)
+                if (boardY >= 0 && boardY < ROWS && boardX >= 0 && boardX < COLS) {
+                    board[boardY][boardX] = color;
+                }
+            }
+        }
+    }
+    checkLines();
+    if (!newPiece()) { // 새 블록 생성 실패 = 게임 오버
+        gameOver();
+    }
+    renderBoard(); // 보드 상태 업데이트 후 다시 렌더링
+}
+
+
+// 8. 줄 제거 로직 (핵심 로직)
+function checkLines() {
+    let linesCleared = 0;
+    for (let y = ROWS - 1; y >= 0; y--) {
+        if (board[y].every(cell => cell !== 0)) {
+            // 한 줄이 가득 찼으면
+            linesCleared++;
+            // 해당 줄을 제거하고 윗줄들을 아래로 당김
+            for (let k = y; k > 0; k--) {
+                board[k] = [...board[k - 1]]; // 배열 복사 (참조가 아닌 값 복사)
+            }
+            board[0] = Array(COLS).fill(0); // 맨 윗줄은 비움
+            y++; // 줄이 당겨졌으므로 현재 줄을 다시 검사해야 함
+        }
+    }
+
+    // 점수 계산 (테트리스 룰 단순화)
+    if (linesCleared > 0) {
+        const points = [0, 100, 300, 500, 800]; // 1줄, 2줄, 3줄, 4줄
+        score += points[linesCleared] || 0;
+        // 게임 속도 증가 (선택 사항)
+        // if (score > 500 && dropSpeed > 500) dropSpeed = 500;
+        // else if (score > 1000 && dropSpeed > 300) dropSpeed = 300;
+        // if (gameLoopInterval) {
+        //     clearInterval(gameLoopInterval);
+        //     gameLoopInterval = setInterval(gameLoop, dropSpeed);
+        // }
+    }
+}
+
+// 9. 게임 루프 (블록 하강)
+function gameLoop() {
+    if (isGameOver) return; // 게임 오버 상태면 루프 중단
+
+    if (!move(0, 1)) { // 아래로 이동 시도, 실패 시 블록 고정
+        lockPiece();
+    }
+    renderBoard();
+}
+
+// 10. 블록 조작 함수 (이동)
+function move(dx, dy) {
+    if (!currentPiece || isGameOver) return false;
+
+    // 현재 블록 지우기 (이동 전)
+    drawPiece(true); 
+
+    const newX = currentX + dx;
+    const newY = currentY + dy;
+    const currentShape = currentPiece.shape[currentPiece.rotationIndex];
+
+    if (isValidMove(newX, newY, currentShape)) {
+        currentX = newX;
+        currentY = newY;
+        // 새 위치에 다시 그리기
+        drawPiece();
+        renderBoard(); // 전체 보드 렌더링 (선택 사항, drawPiece만으로도 가능)
+        return true;
+    }
+    // 이동 실패 시 원위치에 다시 그리기
+    drawPiece();
+    return false;
+}
+
+// 11. 블록 조작 함수 (회전)
+function handleRotate() {
+    if (!currentPiece || isGameOver) return;
+    
+    // 현재 모양을 지우고
+    drawPiece(true);
+    
+    // 다음 회전 인덱스 계산
+    const nextRotationIndex = (currentPiece.rotationIndex + 1) % currentPiece.shape.length;
+    const newShape = currentPiece.shape[nextRotationIndex];
+
+    // 새 모양이 유효한지 검사
+    if (isValidMove(currentX, currentY, newShape)) {
+        currentPiece.rotationIndex = nextRotationIndex;
+        currentPiece.shape[currentPiece.rotationIndex] = newShape; // 현재 블록 모양 업데이트
+    } else {
+        // 벽차기 (Wall Kick) 로직 - 단순화: 좌우 한 칸 이동하여 회전 가능한지 확인
+        // 실제 테트리스는 더 복잡한 벽차기 규칙을 가짐
+        if (isValidMove(currentX + 1, currentY, newShape)) {
+            currentX += 1;
+            currentPiece.rotationIndex = nextRotationIndex;
+            currentPiece.shape[currentPiece.rotationIndex] = newShape;
+        } else if (isValidMove(currentX - 1, currentY, newShape)) {
+            currentX -= 1;
+            currentPiece.rotationIndex = nextRotationIndex;
+            currentPiece.shape[currentPiece.rotationIndex] = newShape;
+        } else if (isValidMove(currentX, currentY - 1, newShape)) { // 한 칸 위로도 시도
+            currentY -= 1;
+            currentPiece.rotationIndex = nextRotationIndex;
+            currentPiece.shape[currentPiece.rotationIndex] = newShape;
+        }
+    }
+
+    // 새 위치/모양에 그리기
+    drawPiece();
+    renderBoard(); // 전체 보드 렌더링 (선택 사항)
+}
+
+
+// 12. 게임 시작
+function startGame() {
+    if (!isGameOver) return; // 이미 게임 중이면 무시
+
+    isGameOver = false;
+    score = 0;
+    dropSpeed = 1000;
+    createBoard(); // 보드 초기화
+    if (newPiece()) { // 새 블록 생성
+        renderBoard();
+        gameLoopInterval = setInterval(gameLoop, dropSpeed); // 게임 루프 시작
+        messageElement.style.display = 'none'; // 메시지 숨기기
+    }
+}
+
+// 13. 게임 오버
+function gameOver() {
+    isGameOver = true;
+    clearInterval(gameLoopInterval);
+    gameLoopInterval = null;
+    messageElement.textContent = `Game Over! 최종 점수: ${score}점`;
+    messageElement.style.display = 'block';
+    // 모든 버튼의 이벤트 리스너를 제거하고 다시 시작 버튼에만 이벤트 추가하는 로직 필요
+    // 여기서는 단순화를 위해 다시 시작 시 메시지 클릭으로 처리
+    setTimeout(() => { // 잠시 후 다시 시작 메시지
+        messageElement.textContent += "\n아무 버튼이나 눌러 다시 시작하세요!";
+    }, 1500);
+}
+
+// 14. 모바일 및 키보드 이벤트 리스너 연결
+function setupControls() {
+    document.getElementById('left').addEventListener('click', (e) => { e.preventDefault(); startGame(); move(-1, 0); });
+    document.getElementById('right').addEventListener('click', (e) => { e.preventDefault(); startGame(); move(1, 0); });
+    document.getElementById('down').addEventListener('click', (e) => { e.preventDefault(); startGame(); move(0, 1); });
+    document.getElementById('rotate').addEventListener('click', (e) => { e.preventDefault(); startGame(); handleRotate(); });
+    
+    // 키보드 이벤트 (PC 테스트용)
+    document.addEventListener('keydown', (e) => {
+        if (isGameOver && (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === ' ')) {
+            startGame();
+            return;
+        }
+        if (isGameOver) return;
+
+        switch (e.key) {
+            case 'ArrowLeft':
+                move(-1, 0);
+                break;
+            case 'ArrowRight':
+                move(1, 0);
+                break;
+            case 'ArrowDown':
+                move(0, 1);
+                break;
+            case 'ArrowUp':
+            case ' ': // 스페이스바도 회전
+                handleRotate();
+                break;
+        }
+    });
+
+    // 시작 메시지 클릭 시 게임 시작 (모바일에서 초기 시작 유도)
+    messageElement.addEventListener('click', (e) => { e.preventDefault(); startGame(); }, { once: true });
+}
+
+// DOMContentLoaded 후에 초기화
+document.addEventListener('DOMContentLoaded', () => {
+    createBoard();
+    renderBoard();
+    setupControls();
+});
+
+// 화면이 회전되거나 크기가 바뀔 때 보드 다시 렌더링 (안정성 향상)
+window.addEventListener('resize', renderBoard);
+                  
